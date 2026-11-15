@@ -4,6 +4,7 @@ const cors = require("cors");
 require("dotenv").config();
 
 const Item = require("./models/Item");
+const { getSemanticSimilarity } = require("./ai/smartMatching");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,8 +14,12 @@ const CATEGORIES = ["Electronics", "ID Cards", "Books", "Accessories", "Other"];
 app.use(cors({ origin: "http://localhost:5173" }));
 app.use(express.json());
 
+// =====================================================
+// HELPER FUNCTIONS
+// =====================================================
+
 function normalize(value = "") {
-  return value
+  return String(value)
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
     .trim();
@@ -24,6 +29,123 @@ function words(value = "") {
   return normalize(value)
     .split(/\s+/)
     .filter((word) => word.length > 1);
+}
+
+const stopWords = new Set([
+  "the",
+  "a",
+  "an",
+  "is",
+  "are",
+  "was",
+  "were",
+  "i",
+  "my",
+  "me",
+  "mine",
+  "we",
+  "our",
+  "you",
+  "your",
+  "it",
+  "this",
+  "that",
+  "there",
+  "where",
+  "when",
+  "what",
+  "which",
+  "who",
+  "how",
+  "can",
+  "could",
+  "would",
+  "should",
+  "do",
+  "does",
+  "did",
+  "have",
+  "has",
+  "had",
+  "please",
+  "help",
+  "find",
+  "search",
+  "look",
+  "looking",
+  "for",
+  "to",
+  "of",
+  "in",
+  "on",
+  "at",
+  "near",
+  "from",
+  "with",
+  "and",
+  "or",
+  "any",
+  "some",
+  "all",
+  "me",
+  "lost",
+  "found",
+  "item",
+  "items",
+  "report",
+  "reports",
+  "something",
+  "something",
+  "hello",
+  "hi",
+  "hey",
+  "was",
+  "been",
+  "about",
+  "tell",
+  "show",
+  "want",
+  "need",
+  "get",
+  "got",
+  "have",
+  "had",
+  "please",
+  "available",
+]);
+
+function getSearchTerms(message) {
+  return [...new Set(words(message).filter((word) => !stopWords.has(word)))];
+}
+
+// Score a report against the student's message.
+function calculateSearchScore(message, item) {
+  const searchTerms = getSearchTerms(message);
+
+  if (searchTerms.length === 0) return 0;
+
+  const titleWords = words(item.title);
+  const descriptionWords = words(item.description);
+  const locationWords = words(item.location);
+  const categoryWords = words(item.category);
+
+  let score = 0;
+
+  for (const term of searchTerms) {
+    if (titleWords.includes(term)) score += 5;
+    if (descriptionWords.includes(term)) score += 2;
+    if (locationWords.includes(term)) score += 4;
+    if (categoryWords.includes(term)) score += 3;
+  }
+
+  const normalizedMessage = normalize(message);
+  const normalizedTitle = normalize(item.title);
+
+  if (normalizedTitle && normalizedMessage.includes(normalizedTitle)) {
+    score += 5;
+  }
+
+  return score;
 }
 
 function matchScore(lost, found) {
@@ -39,6 +161,7 @@ function matchScore(lost, found) {
   }
 
   let score = lost.category === found.category ? 3 : 0;
+
   const lostTitle = normalize(lost.title);
   const foundTitle = normalize(found.title);
 
@@ -46,6 +169,7 @@ function matchScore(lost, found) {
     score += 5;
   } else {
     const foundWords = new Set(words(foundTitle));
+
     score += Math.min(
       words(lostTitle).filter((word) => foundWords.has(word)).length * 2,
       4,
@@ -74,56 +198,305 @@ async function getLinkedReport(item) {
   return Item.findOne({ matchedItemId: item._id });
 }
 
+// =====================================================
+// HOME ROUTE
+// =====================================================
+
 app.get("/", (req, res) => {
   res.send("CampusLoop API is running.");
 });
 
+// =====================================================
+// RULE-BASED CAMPUSLOOP CHATBOT
+// NO GEMINI API REQUIRED
+// =====================================================
+
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { message } = req.body || {};
+
+    if (typeof message !== "string" || !message.trim()) {
+      return res.status(400).json({
+        reply: "Please enter a message.",
+      });
+    }
+
+    if (message.length > 1000) {
+      return res.status(400).json({
+        reply: "Please keep your message under 1,000 characters.",
+      });
+    }
+
+    const userMessage = normalize(message);
+
+    // ---------------------------------------------
+    // COMMON SUPPORT QUESTIONS
+    // ---------------------------------------------
+
+    if (
+      userMessage.includes("hello") ||
+      userMessage.includes("hi") ||
+      userMessage.includes("hey")
+    ) {
+      return res.json({
+        reply:
+          "Hello! Welcome to CampusLoop. I can help you search lost and found items, find possible matches, and explain how to report or claim an item. What are you looking for?",
+      });
+    }
+
+    if (
+      userMessage.includes("how to report") ||
+      userMessage.includes("report an item") ||
+      userMessage.includes("create report") ||
+      userMessage.includes("post an item")
+    ) {
+      return res.json({
+        reply:
+          "To report an item on CampusLoop:\n\n" +
+          "1. Open the Report Item section.\n" +
+          "2. Choose Lost or Found.\n" +
+          "3. Enter the item name and description.\n" +
+          "4. Select its category.\n" +
+          "5. Enter the location and contact details.\n" +
+          "6. Submit your report.\n\n" +
+          "Your report will appear on the CampusLoop listing board.",
+      });
+    }
+
+    if (
+      userMessage.includes("how to claim") ||
+      userMessage.includes("claim an item") ||
+      userMessage.includes("claim process")
+    ) {
+      return res.json({
+        reply:
+          "To claim an item:\n\n" +
+          "1. Browse the Found Items section.\n" +
+          "2. Select the item you believe belongs to you.\n" +
+          "3. Submit your claim with your name, contact details and ownership evidence.\n" +
+          "4. Wait for staff verification.\n" +
+          "5. After verification, coordinate the handover with staff.\n\n" +
+          "Please provide accurate ownership evidence.",
+      });
+    }
+
+    if (
+      userMessage.includes("how does") ||
+      userMessage.includes("how it works") ||
+      userMessage.includes("what is campusloop")
+    ) {
+      return res.json({
+        reply:
+          "CampusLoop is a college Lost and Found platform. Students can report lost or found belongings, browse reports, identify possible matches and submit claims. Staff can verify claims and manage the handover process.",
+      });
+    }
+
+    if (userMessage.includes("thank") || userMessage.includes("thanks")) {
+      return res.json({
+        reply:
+          "You're welcome! I'm happy to help. Let me know if you need help finding an item on CampusLoop.",
+      });
+    }
+
+    // ---------------------------------------------
+    // SEARCH MONGODB REPORTS
+    // ---------------------------------------------
+
+    const allItems = await Item.find()
+      .select("title description category location type status createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (allItems.length === 0) {
+      return res.json({
+        reply:
+          "There are currently no reports in the CampusLoop database. You can create a Lost or Found report to get started.",
+      });
+    }
+
+    // Decide whether the student is asking about Lost or Found.
+    const asksLost =
+      userMessage.includes("lost item") ||
+      userMessage.includes("lost report") ||
+      userMessage.includes("show lost") ||
+      userMessage.includes("my lost");
+
+    const asksFound =
+      userMessage.includes("found item") ||
+      userMessage.includes("found report") ||
+      userMessage.includes("show found") ||
+      userMessage.includes("where was") ||
+      userMessage.includes("where is");
+
+    // If a student says "I lost my wallet", search active Found reports.
+    // If they explicitly ask to see Lost reports, search Lost reports.
+    let targetType = "Found";
+
+    if (asksLost && !asksFound) {
+      targetType = "Lost";
+    }
+
+    if (asksFound) {
+      targetType = "Found";
+    }
+
+    const eligibleItems = allItems.filter((item) => {
+      if (item.type !== targetType) return false;
+      return item.status === "Active";
+    });
+
+    if (eligibleItems.length === 0) {
+      return res.json({
+        reply:
+          targetType === "Found"
+            ? "There are currently no active Found reports in CampusLoop. You can check again later or report your lost item."
+            : "There are currently no active Lost reports in CampusLoop.",
+      });
+    }
+
+    // ---------------------------------------------
+    // MATCH AND RANK REPORTS
+    // ---------------------------------------------
+
+    const rankedItems = eligibleItems
+      .map((item) => ({
+        item,
+        score: calculateSearchScore(message, item),
+      }))
+      .filter((result) => result.score > 0)
+      .sort((a, b) => b.score - a.score);
+
+    if (rankedItems.length === 0) {
+      return res.json({
+        reply:
+          targetType === "Found"
+            ? "I couldn't find a matching active Found report for your description. Try including the item's colour, name, category or the place where you lost it."
+            : "I couldn't find a matching active Lost report. Try searching with another description or location.",
+      });
+    }
+
+    // Show up to five possible matches.
+    const matches = rankedItems.slice(0, 5);
+
+    const heading =
+      targetType === "Found"
+        ? "Here are the possible Found item matches from CampusLoop:"
+        : "Here are the matching Lost reports from CampusLoop:";
+
+    const matchDetails = matches.map((result, index) => {
+      const item = result.item;
+
+      const date = item.createdAt
+        ? new Date(item.createdAt).toLocaleDateString("en-IN")
+        : "Not available";
+
+      return (
+        `\n\n${index + 1}. ${item.title}` +
+        `\nCategory: ${item.category}` +
+        `\nDescription: ${item.description}` +
+        `\nLocation: ${item.location}` +
+        `\nStatus: ${item.status}` +
+        `\nReported date: ${date}`
+      );
+    });
+
+    let reply = heading + matchDetails.join("");
+
+    if (targetType === "Found") {
+      reply +=
+        "\n\nThese are possible matches, not confirmed ownership. Please submit a claim with ownership evidence and wait for staff verification.";
+    }
+
+    return res.json({ reply });
+  } catch (error) {
+    console.error("CampusLoop chatbot error:", error);
+
+    return res.status(500).json({
+      reply:
+        "Something went wrong while searching CampusLoop reports. Please try again.",
+    });
+  }
+});
+
+// =====================================================
+// GET ALL ITEMS WITH EXISTING AI SEMANTIC MATCHING
+// =====================================================
+
 app.get("/api/items", async (req, res) => {
   try {
     const allItems = await Item.find().sort({ createdAt: -1 });
-    const activeItems = allItems.filter((item) => item.status === "Active");
 
-    const results = allItems.map((item) => {
+    const activeFoundItems = allItems.filter(
+      (item) => item.type === "Found" && item.status === "Active",
+    );
+
+    const results = [];
+
+    for (const item of allItems) {
       const data = item.toObject();
 
       if (item.type === "Lost" && item.status === "Active") {
-        data.possibleMatches = activeItems
-          .filter((found) => found.type === "Found")
-          .map((found) => ({
-            found,
-            score: matchScore(item, found),
-          }))
-          .filter((result) => result.score >= 3)
-          .sort((a, b) => b.score - a.score)
-          .map(({ found, score }) => ({
-            ...found.toObject(),
-            matchScore: score,
-          }));
+        const matches = [];
+
+        for (const found of activeFoundItems) {
+          try {
+            const similarity = await getSemanticSimilarity(item, found);
+
+            if (similarity >= 55) {
+              matches.push({
+                ...found.toObject(),
+                aiSimilarity: similarity,
+              });
+            }
+          } catch (aiError) {
+            console.error("AI matching error:", aiError.message);
+          }
+        }
+
+        data.possibleMatches = matches
+          .sort((a, b) => b.aiSimilarity - a.aiSimilarity)
+          .slice(0, 5);
       }
 
-      return data;
-    });
+      results.push(data);
+    }
 
     res.json(results);
   } catch (error) {
     console.error("Get items error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
+
+// =====================================================
+// GET CLAIMS
+// =====================================================
 
 app.get("/api/claims", async (req, res) => {
   try {
     const claims = await Item.find({
       type: "Found",
-      status: { $in: ["Claim Pending", "Matched", "Returned"] },
+      status: {
+        $in: ["Claim Pending", "Matched", "Returned"],
+      },
     }).sort({ updatedAt: -1 });
 
     res.json(claims);
   } catch (error) {
     console.error("Get claims error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
+
+// =====================================================
+// CREATE LOST / FOUND ITEM
+// =====================================================
 
 app.post("/api/items", async (req, res) => {
   try {
@@ -158,11 +531,17 @@ app.post("/api/items", async (req, res) => {
     });
   } catch (error) {
     console.error("Create report error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
 
-// Submit a claim. A matching Lost report is optional.
+// =====================================================
+// SUBMIT CLAIM
+// =====================================================
+
 app.post("/api/items/:id/claim", async (req, res) => {
   try {
     const { lostItemId, claimedBy, claimContact, claimEvidence } = req.body;
@@ -180,7 +559,9 @@ app.post("/api/items/:id/claim", async (req, res) => {
     const found = await Item.findById(req.params.id);
 
     if (!found || found.type !== "Found") {
-      return res.status(404).json({ message: "Found report not found." });
+      return res.status(404).json({
+        message: "Found report not found.",
+      });
     }
 
     if (found.status !== "Active") {
@@ -193,7 +574,9 @@ app.post("/api/items/:id/claim", async (req, res) => {
 
     if (lostItemId) {
       if (!mongoose.isValidObjectId(lostItemId)) {
-        return res.status(400).json({ message: "Invalid Lost report ID." });
+        return res.status(400).json({
+          message: "Invalid Lost report ID.",
+        });
       }
 
       lost = await Item.findById(lostItemId);
@@ -233,11 +616,17 @@ app.post("/api/items/:id/claim", async (req, res) => {
     });
   } catch (error) {
     console.error("Claim error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
 
-// Verify a claim; handover is completed separately.
+// =====================================================
+// APPROVE CLAIM
+// =====================================================
+
 app.patch("/api/items/:id/approve-claim", async (req, res) => {
   try {
     const { verifiedBy, staffNotes = "" } = req.body;
@@ -251,7 +640,9 @@ app.patch("/api/items/:id/approve-claim", async (req, res) => {
     const found = await Item.findById(req.params.id);
 
     if (!found || found.type !== "Found") {
-      return res.status(404).json({ message: "Found report not found." });
+      return res.status(404).json({
+        message: "Found report not found.",
+      });
     }
 
     if (found.status !== "Claim Pending") {
@@ -284,6 +675,7 @@ app.patch("/api/items/:id/approve-claim", async (req, res) => {
       lost.staffNotes = String(staffNotes).trim();
       lost.matchedItemId = found._id;
       found.matchedItemId = lost._id;
+
       await lost.save();
     }
 
@@ -296,17 +688,25 @@ app.patch("/api/items/:id/approve-claim", async (req, res) => {
     });
   } catch (error) {
     console.error("Approval error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
 
-// Mark the Found report Returned and its linked Lost report Closed.
+// =====================================================
+// RETURN ITEM
+// =====================================================
+
 app.patch("/api/items/:id/return", async (req, res) => {
   try {
     const found = await Item.findById(req.params.id);
 
     if (!found || found.type !== "Found") {
-      return res.status(404).json({ message: "Found report not found." });
+      return res.status(404).json({
+        message: "Found report not found.",
+      });
     }
 
     if (found.status !== "Matched") {
@@ -330,15 +730,13 @@ app.patch("/api/items/:id/return", async (req, res) => {
     }
 
     const returnedAt = new Date();
-
-    // Save the Lost report first. If saving the Found report then fails,
-    // restore the Lost report to Matched.
     let lostWasSaved = false;
 
     if (lost) {
       lost.status = "Closed";
       lost.returnedAt = returnedAt;
       lost.matchedItemId = found._id;
+
       await lost.save();
       lostWasSaved = true;
     }
@@ -347,16 +745,24 @@ app.patch("/api/items/:id/return", async (req, res) => {
       found.status = "Returned";
       found.returnedAt = returnedAt;
 
-      if (lost) found.matchedItemId = lost._id;
+      if (lost) {
+        found.matchedItemId = lost._id;
+      }
 
       await found.save();
     } catch (saveError) {
       if (lostWasSaved) {
         await Item.updateOne(
           { _id: lost._id },
-          { $set: { status: "Matched", returnedAt: null } },
+          {
+            $set: {
+              status: "Matched",
+              returnedAt: null,
+            },
+          },
         );
       }
+
       throw saveError;
     }
 
@@ -371,17 +777,25 @@ app.patch("/api/items/:id/return", async (req, res) => {
     });
   } catch (error) {
     console.error("Return error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
 
-// Delete an individual active report, or both linked completed reports.
+// =====================================================
+// DELETE ITEM
+// =====================================================
+
 app.delete("/api/items/:id", async (req, res) => {
   try {
     const item = await Item.findById(req.params.id);
 
     if (!item) {
-      return res.status(404).json({ message: "Report not found." });
+      return res.status(404).json({
+        message: "Report not found.",
+      });
     }
 
     if (["Claim Pending", "Matched"].includes(item.status)) {
@@ -403,8 +817,9 @@ app.delete("/api/items/:id", async (req, res) => {
         });
       }
 
-      // Remove both records. Restore the first if the second deletion fails.
-      const firstDeleted = await Item.deleteOne({ _id: item._id });
+      const firstDeleted = await Item.deleteOne({
+        _id: item._id,
+      });
 
       if (!firstDeleted.deletedCount) {
         return res.status(500).json({
@@ -413,10 +828,13 @@ app.delete("/api/items/:id", async (req, res) => {
       }
 
       try {
-        const secondDeleted = await Item.deleteOne({ _id: linked._id });
+        const secondDeleted = await Item.deleteOne({
+          _id: linked._id,
+        });
 
         if (!secondDeleted.deletedCount) {
           await Item.create([item.toObject()]);
+
           return res.status(500).json({
             message:
               "The linked report could not be deleted. The selected report was restored.",
@@ -441,9 +859,16 @@ app.delete("/api/items/:id", async (req, res) => {
     });
   } catch (error) {
     console.error("Delete error:", error);
-    res.status(500).json({ message: error.message });
+
+    res.status(500).json({
+      message: error.message,
+    });
   }
 });
+
+// =====================================================
+// CONNECT TO MONGODB
+// =====================================================
 
 mongoose
   .connect(process.env.MONGODB_URI)

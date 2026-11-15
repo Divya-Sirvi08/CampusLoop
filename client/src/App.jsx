@@ -53,6 +53,17 @@ function App() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
 
+  // Chatbot state
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatInput, setChatInput] = useState("");
+  const [chatSending, setChatSending] = useState(false);
+  const [chatMessages, setChatMessages] = useState([
+    {
+      role: "assistant",
+      text: "Hi! I'm the CampusLoop assistant. I can help you search Lost and Found reports, find possible matches, and explain how to report or claim an item.",
+    },
+  ]);
+
   const loadItems = useCallback(async () => {
     const data = await request(`${API}/items`);
     setItems(data);
@@ -170,7 +181,7 @@ function App() {
     }
   }
 
-  // One click verifies the claim and then completes the handover.
+  // Verify the claim and complete the handover.
   async function approveAndComplete(item) {
     const input = staffInputs[item._id] || {};
 
@@ -195,7 +206,6 @@ function App() {
     setBusy(true);
 
     try {
-      // First, verify the claim.
       const approved = await request(`${API}/items/${item._id}/approve-claim`, {
         method: "PATCH",
         body: JSON.stringify({
@@ -206,12 +216,10 @@ function App() {
 
       setNotice(approved.message);
 
-      // Then, complete handover.
       const returned = await request(`${API}/items/${item._id}/return`, {
         method: "PATCH",
       });
 
-      // Reload both reports and claim records.
       await refresh();
 
       setStaffInputs((previous) => {
@@ -225,6 +233,7 @@ function App() {
       );
     } catch (err) {
       setError(err.message);
+
       try {
         await refresh();
       } catch {
@@ -264,6 +273,62 @@ function App() {
     }
   }
 
+  // Chatbot API connection
+  async function sendChat(event, suggestedMessage) {
+    if (event) event.preventDefault();
+
+    const message = (suggestedMessage ?? chatInput).trim();
+
+    if (!message || chatSending) return;
+
+    setChatMessages((previous) => [
+      ...previous,
+      { role: "user", text: message },
+    ]);
+
+    setChatInput("");
+    setChatSending(true);
+
+    try {
+      const response = await fetch(`${API}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.reply ||
+            data.message ||
+            "Unable to contact the CampusLoop assistant.",
+        );
+      }
+
+      setChatMessages((previous) => [
+        ...previous,
+        {
+          role: "assistant",
+          text: data.reply || "Sorry, I couldn't prepare a response.",
+        },
+      ]);
+    } catch (err) {
+      setChatMessages((previous) => [
+        ...previous,
+        {
+          role: "assistant",
+          text:
+            err.message || "Couldn't connect to CampusLoop. Please try again.",
+        },
+      ]);
+    } finally {
+      setChatSending(false);
+    }
+  }
+
   const activeItems = items.filter((item) => item.status === "Active");
   const lostItems = activeItems.filter((item) => item.type === "Lost");
   const foundItems = activeItems.filter((item) => item.type === "Found");
@@ -288,9 +353,11 @@ function App() {
 
         <nav>
           <a href="#listings">Browse items</a>
+
           <button className="staff-nav" onClick={() => setShowStaff(true)}>
             Staff claims ({pendingClaims.length})
           </button>
+
           <button className="primary-button" onClick={() => openReport()}>
             + Report item
           </button>
@@ -301,11 +368,13 @@ function App() {
         <section className="hero" id="home">
           <div className="hero-content">
             <span className="eyebrow">YOUR CAMPUS. YOUR COMMUNITY.</span>
+
             <h1>
               Lost something?
               <br />
               <span>Let's find it together.</span>
             </h1>
+
             <p>
               Report lost belongings, share found items and discover possible
               matches across your campus.
@@ -318,6 +387,7 @@ function App() {
               >
                 I lost something
               </button>
+
               <button
                 className="secondary-button"
                 onClick={() => openReport("Found")}
@@ -349,14 +419,14 @@ function App() {
         </section>
 
         {notice && (
-          <div className="notice" role="status">
+          <div className="notice">
             <span>{notice}</span>
             <button onClick={() => setNotice("")}>×</button>
           </div>
         )}
 
         {error && (
-          <div className="error-message" role="alert">
+          <div className="error-message">
             <span>{error}</span>
             <button onClick={() => setError("")}>×</button>
           </div>
@@ -380,6 +450,7 @@ function App() {
               <h2>Item reports</h2>
               <p>Browse active Lost and Found reports.</p>
             </div>
+
             <button className="secondary-button" onClick={() => openReport()}>
               + Add listing
             </button>
@@ -410,25 +481,54 @@ function App() {
                               {item.category}
                             </span>
                           </div>
+
                           <h4>{item.title}</h4>
                           <p>{item.description}</p>
+
                           <div className="card-location">
                             📍 {item.location}
                           </div>
+
                           <div className="card-footer">View details →</div>
                         </button>
 
                         {item.possibleMatches?.length > 0 && (
-                          <div className="possible-match">
-                            <strong>✦ Possible matches</strong>
+                          <div className="possible-match ai-possible-match">
+                            <strong className="ai-match-heading">
+                              ✨ AI Suggested Matches
+                            </strong>
+
+                            <p className="ai-match-description">
+                              CampusLoop AI found reports with similar
+                              descriptions. Check the details before making a
+                              claim.
+                            </p>
+
                             {item.possibleMatches.map((match) => (
-                              <button
-                                className="match-link"
-                                key={match._id}
-                                onClick={() => openDetails(match)}
-                              >
-                                View Found: {match.title} →
-                              </button>
+                              <div className="ai-match-card" key={match._id}>
+                                <div className="ai-match-info">
+                                  <strong>{match.title}</strong>
+
+                                  {typeof match.aiSimilarity === "number" && (
+                                    <span className="ai-similarity">
+                                      {match.aiSimilarity}% similarity
+                                    </span>
+                                  )}
+                                </div>
+
+                                <p>{match.description}</p>
+
+                                <span className="ai-match-location">
+                                  📍 {match.location}
+                                </span>
+
+                                <button
+                                  className="match-link"
+                                  onClick={() => openDetails(match)}
+                                >
+                                  View found item →
+                                </button>
+                              </div>
                             ))}
                           </div>
                         )}
@@ -469,11 +569,14 @@ function App() {
                               {item.category}
                             </span>
                           </div>
+
                           <h4>{item.title}</h4>
                           <p>{item.description}</p>
+
                           <div className="card-location">
                             📍 {item.location}
                           </div>
+
                           <div className="card-footer">
                             View details and claim →
                           </div>
@@ -499,52 +602,37 @@ function App() {
           <div className="section-heading">
             <div>
               <span className="eyebrow">TRACKING</span>
-              <h2>Recovery progress</h2>
-              <p>Track claims and completed reports.</p>
+              <h2>Recovery status</h2>
+              <p>Track claims and completed returns.</p>
             </div>
           </div>
 
           <div className="status-grid">
             <div className="status-card">
-              <span className="status-number">{pendingClaims.length}</span>
-              <strong>Claims pending</strong>
-              <p>Waiting for staff verification</p>
+              <span>Active reports</span>
+              <strong>{activeItems.length}</strong>
             </div>
+
             <div className="status-card">
-              <span className="status-number">{matchedClaims.length}</span>
-              <strong>Verified claims</strong>
-              <p>Awaiting handover</p>
+              <span>Pending claims</span>
+              <strong>{pendingClaims.length}</strong>
             </div>
+
             <div className="status-card">
-              <span className="status-number">{completedItems.length}</span>
-              <strong>Completed reports</strong>
-              <p>Returned or closed</p>
+              <span>Verified claims</span>
+              <strong>{matchedClaims.length}</strong>
+            </div>
+
+            <div className="status-card">
+              <span>Completed reports</span>
+              <strong>{completedItems.length}</strong>
             </div>
           </div>
-
-          {matchedClaims.length > 0 && (
-            <div className="completed-list">
-              <h3>Verified — awaiting handover</h3>
-              {matchedClaims.map((item) => (
-                <div className="completed-row" key={item._id}>
-                  <div>
-                    <strong>{item.title}</strong>
-                    <p>Claimant: {item.claimedBy}</p>
-                  </div>
-                  <button
-                    className="primary-button"
-                    onClick={() => openDetails(item)}
-                  >
-                    Handover details
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
 
           {completedItems.length > 0 && (
             <div className="completed-list">
               <h3>Completed reports</h3>
+
               {completedItems.map((item) => (
                 <div className="completed-row" key={item._id}>
                   <div>
@@ -553,6 +641,7 @@ function App() {
                       {item.type} · {item.status}
                     </p>
                   </div>
+
                   <button
                     className="danger-button small-button"
                     disabled={busy}
@@ -567,75 +656,62 @@ function App() {
         </section>
       </main>
 
-      <footer>
-        <a className="brand" href="#home">
-          <span className="brand-icon">C</span> CampusLoop
-        </a>
-        <p>Helping campus belongings find their way home.</p>
-      </footer>
-
-      {/* LANDSCAPE REPORT FORM */}
+      {/* REPORT FORM */}
       {showForm && (
-        <div
-          className="modal-overlay"
-          onClick={() => !busy && setShowForm(false)}
-        >
+        <div className="modal-overlay" onClick={() => setShowForm(false)}>
           <section
             className="modal report-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="report-title"
             onClick={(event) => event.stopPropagation()}
           >
-            <button
-              className="close-button"
-              disabled={busy}
-              onClick={() => setShowForm(false)}
-            >
+            <button className="close-button" onClick={() => setShowForm(false)}>
               ×
             </button>
 
-            <span className="eyebrow">CAMPUSLOOP REPORT</span>
-            <h2 id="report-title">
+            <span className="eyebrow">CAMPUS COMMUNITY</span>
+
+            <h2>
               {form.type === "Lost"
                 ? "Report a lost item"
                 : "Report a found item"}
             </h2>
+
             <p className="report-subtitle">
-              {form.type === "Lost"
-                ? "Describe your missing item so others can identify it."
-                : "Describe the item you found. You are not claiming ownership."}
+              Add the details below to help the campus community identify the
+              item.
             </p>
 
-            <form className="form report-form" onSubmit={submitReport}>
+            <form className="report-form" onSubmit={submitReport}>
               <label>
-                Report type
+                Item name
+                <input
+                  name="title"
+                  value={form.title}
+                  onChange={(event) =>
+                    setForm({ ...form, title: event.target.value })
+                  }
+                  placeholder="e.g. Black Puma wallet"
+                  required
+                />
+              </label>
+
+              <label>
+                Type
                 <select
+                  name="type"
                   value={form.type}
                   onChange={(event) =>
                     setForm({ ...form, type: event.target.value })
                   }
                 >
-                  <option value="Lost">Lost item</option>
-                  <option value="Found">Found item</option>
+                  <option value="Lost">Lost</option>
+                  <option value="Found">Found</option>
                 </select>
-              </label>
-
-              <label>
-                Item name
-                <input
-                  required
-                  value={form.title}
-                  placeholder="e.g. Black wallet"
-                  onChange={(event) =>
-                    setForm({ ...form, title: event.target.value })
-                  }
-                />
               </label>
 
               <label>
                 Category
                 <select
+                  name="category"
                   value={form.category}
                   onChange={(event) =>
                     setForm({ ...form, category: event.target.value })
@@ -652,49 +728,52 @@ function App() {
               <label>
                 Location
                 <input
-                  required
+                  name="location"
                   value={form.location}
-                  placeholder="e.g. College library"
                   onChange={(event) =>
                     setForm({ ...form, location: event.target.value })
                   }
+                  placeholder="e.g. College library"
+                  required
                 />
               </label>
 
               <label className="wide-field">
                 Description
                 <textarea
-                  required
-                  rows={2}
+                  name="description"
                   value={form.description}
-                  placeholder="Colour, brand and distinguishing details..."
                   onChange={(event) =>
                     setForm({ ...form, description: event.target.value })
                   }
+                  placeholder="Colour, brand and distinguishing details..."
+                  required
                 />
               </label>
 
               <label className="wide-field">
-                Reporter contact
+                Contact
                 <input
-                  required
+                  name="contact"
                   value={form.contact}
-                  placeholder="College email or contact"
                   onChange={(event) =>
                     setForm({ ...form, contact: event.target.value })
                   }
+                  placeholder="College email or contact"
+                  required
                 />
               </label>
 
-              <div className="wide-field form-actions">
+              <div className="form-actions wide-field">
                 <button
                   type="button"
                   className="secondary-button"
-                  disabled={busy}
                   onClick={() => setShowForm(false)}
+                  disabled={busy}
                 >
                   Cancel
                 </button>
+
                 <button
                   type="submit"
                   className="primary-button"
@@ -713,9 +792,6 @@ function App() {
         <div className="modal-overlay" onClick={() => setSelected(null)}>
           <section
             className="modal details-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="details-title"
             onClick={(event) => event.stopPropagation()}
           >
             <button className="close-button" onClick={() => setSelected(null)}>
@@ -730,13 +806,10 @@ function App() {
               {selected.type.toUpperCase()}
             </span>
 
-            <h2 id="details-title">{selected.title}</h2>
+            <h2>{selected.title}</h2>
             <p className="details-description">{selected.description}</p>
 
             <div className="details-list">
-              <p>
-                <strong>Report ID:</strong> {selected._id}
-              </p>
               <p>
                 <strong>Category:</strong> {selected.category}
               </p>
@@ -753,16 +826,12 @@ function App() {
                 <strong>Created:</strong>{" "}
                 {new Date(selected.createdAt).toLocaleString()}
               </p>
-              {selected.matchedItemId && (
-                <p>
-                  <strong>Linked report ID:</strong> {selected.matchedItemId}
-                </p>
-              )}
             </div>
 
             {selected.type === "Found" && selected.status === "Active" && (
               <div className="workflow-panel">
                 <h3>Claim this found item</h3>
+
                 <p>
                   You can submit a claim even if no matching Lost report exists.
                   Provide evidence that helps staff verify ownership.
@@ -774,7 +843,10 @@ function App() {
                     <select
                       value={claim.lostItemId}
                       onChange={(event) =>
-                        setClaim({ ...claim, lostItemId: event.target.value })
+                        setClaim({
+                          ...claim,
+                          lostItemId: event.target.value,
+                        })
                       }
                     >
                       <option value="">No matching Lost report</option>
@@ -789,32 +861,36 @@ function App() {
                   <label>
                     Your full name
                     <input
-                      required
                       value={claim.claimedBy}
                       onChange={(event) =>
-                        setClaim({ ...claim, claimedBy: event.target.value })
+                        setClaim({
+                          ...claim,
+                          claimedBy: event.target.value,
+                        })
                       }
                       placeholder="Full name"
+                      required
                     />
                   </label>
 
                   <label>
                     Your contact
                     <input
-                      required
                       value={claim.claimContact}
                       onChange={(event) =>
-                        setClaim({ ...claim, claimContact: event.target.value })
+                        setClaim({
+                          ...claim,
+                          claimContact: event.target.value,
+                        })
                       }
                       placeholder="College email or phone"
+                      required
                     />
                   </label>
 
                   <label>
                     Ownership evidence
                     <textarea
-                      required
-                      rows={3}
                       value={claim.claimEvidence}
                       onChange={(event) =>
                         setClaim({
@@ -823,6 +899,7 @@ function App() {
                         })
                       }
                       placeholder="Unique details only the owner would know"
+                      required
                     />
                   </label>
 
@@ -848,10 +925,6 @@ function App() {
                 </p>
                 <p>
                   <strong>Evidence:</strong> {selected.claimEvidence}
-                </p>
-                <p>
-                  <strong>Linked Lost report:</strong>{" "}
-                  {selected.matchedItemId || "No matching report"}
                 </p>
                 <p>
                   Staff must verify the evidence before completing the return.
@@ -905,9 +978,6 @@ function App() {
         <div className="modal-overlay" onClick={() => setShowStaff(false)}>
           <section
             className="modal staff-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="staff-title"
             onClick={(event) => event.stopPropagation()}
           >
             <button
@@ -918,7 +988,8 @@ function App() {
             </button>
 
             <span className="eyebrow">STAFF WORKSPACE</span>
-            <h2 id="staff-title">Claim verification</h2>
+            <h2>Claim verification</h2>
+
             <p>
               Review the evidence and verify ownership. Complete the handover
               only after the item has actually been returned.
@@ -933,18 +1004,23 @@ function App() {
                 return (
                   <div className="staff-claim" key={item._id}>
                     <h3>{item.title}</h3>
+
                     <p>
                       <strong>Claimant:</strong> {item.claimedBy}
                     </p>
+
                     <p>
                       <strong>Contact:</strong> {item.claimContact}
                     </p>
+
                     <p>
                       <strong>Evidence:</strong> {item.claimEvidence}
                     </p>
+
                     <p>
                       <strong>Found report ID:</strong> {item._id}
                     </p>
+
                     <p>
                       <strong>Lost report ID:</strong>{" "}
                       {item.matchedItemId || "No matching report"}
@@ -996,15 +1072,18 @@ function App() {
             {matchedClaims.length > 0 && (
               <div className="completed-list">
                 <h3>Previously verified — awaiting handover</h3>
+
                 {matchedClaims.map((item) => {
                   const input = staffInputs[item._id] || {};
 
                   return (
                     <div className="staff-claim" key={item._id}>
                       <h3>{item.title}</h3>
+
                       <p>
                         <strong>Claimant:</strong> {item.claimedBy}
                       </p>
+
                       <p>
                         <strong>Verified by:</strong> {item.verifiedBy}
                       </p>
@@ -1048,8 +1127,9 @@ function App() {
                             !window.confirm(
                               "Confirm that the item has now been physically handed over?",
                             )
-                          )
+                          ) {
                             return;
+                          }
 
                           setError("");
                           setBusy(true);
@@ -1059,6 +1139,7 @@ function App() {
                               `${API}/items/${item._id}/return`,
                               { method: "PATCH" },
                             );
+
                             setNotice(result.message);
                             await refresh();
                           } catch (err) {
@@ -1078,6 +1159,109 @@ function App() {
           </section>
         </div>
       )}
+
+      {/* CAMPUSLOOP CHATBOT */}
+      <div className="chatbot-widget">
+        {chatOpen && (
+          <section
+            className="chatbot-panel"
+            role="dialog"
+            aria-label="CampusLoop assistant"
+          >
+            <div className="chatbot-header">
+              <div className="chatbot-header-info">
+                <div className="chatbot-avatar">C</div>
+                <div>
+                  <strong>CampusLoop Assistant</strong>
+                  <span>Lost &amp; Found support</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                className="chatbot-close"
+                aria-label="Close chat"
+                onClick={() => setChatOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="chatbot-messages" aria-live="polite">
+              {chatMessages.map((message, index) => (
+                <div
+                  className={`chat-message ${
+                    message.role === "user"
+                      ? "user-message"
+                      : "assistant-message"
+                  }`}
+                  key={`${message.role}-${index}`}
+                >
+                  <div className="chat-message-bubble">{message.text}</div>
+                </div>
+              ))}
+
+              {chatSending && (
+                <div className="chat-message assistant-message">
+                  <div className="chat-message-bubble chatbot-typing">
+                    Searching CampusLoop...
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="chatbot-suggestions">
+              <button
+                type="button"
+                disabled={chatSending}
+                onClick={() => sendChat(null, "How do I report a lost item?")}
+              >
+                How to report?
+              </button>
+
+              <button
+                type="button"
+                disabled={chatSending}
+                onClick={() => sendChat(null, "How do I claim a found item?")}
+              >
+                How to claim?
+              </button>
+            </div>
+
+            <form className="chatbot-form" onSubmit={sendChat}>
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(event) => setChatInput(event.target.value)}
+                placeholder="Ask about a lost or found item..."
+                aria-label="Type your message"
+                maxLength={1000}
+                disabled={chatSending}
+              />
+
+              <button
+                type="submit"
+                disabled={chatSending || !chatInput.trim()}
+                aria-label="Send message"
+              >
+                {chatSending ? "..." : "➤"}
+              </button>
+            </form>
+          </section>
+        )}
+
+        <button
+          type="button"
+          className="chatbot-launcher"
+          onClick={() => setChatOpen((open) => !open)}
+          aria-label={
+            chatOpen ? "Close CampusLoop chat" : "Open CampusLoop chat"
+          }
+          aria-expanded={chatOpen}
+        >
+          {chatOpen ? "×" : "💬"}
+        </button>
+      </div>
     </div>
   );
 }
